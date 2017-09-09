@@ -642,7 +642,6 @@ packBytes(char* dest,const bool* src,int bits)
 */
 typedef struct
 {
-  ProtocolDesc* pd;
   int destParty, keyBytes;
   BCipherRandomGen **keyblock;
   bool *S;
@@ -654,7 +653,7 @@ senderExtensionBoxNew (ProtocolDesc* pd, int destParty, int keyBytes)
 {
   const int k = keyBytes*8;
   SenderExtensionBox* s = malloc(sizeof *s);
-  s->pd=pd; s->destParty=destParty; s->keyBytes = k/8;
+  s->keyBytes = k/8;
   s->spack = malloc(sizeof(char[k/8]));
   gcry_randomize(s->spack,k/8,GCRY_STRONG_RANDOM);
   s->S = malloc(sizeof(bool[k]));
@@ -686,7 +685,6 @@ senderExtensionBoxRelease (SenderExtensionBox* s)
 
 typedef struct
 {
-  ProtocolDesc* pd;
   int srcParty, keyBytes;
   BCipherRandomGen **keyblock0, **keyblock1;
 } RecverExtensionBox;
@@ -696,7 +694,7 @@ recverExtensionBoxNew (ProtocolDesc* pd, int srcParty, int keyBytes)
 {
   const int k = keyBytes*8;
   RecverExtensionBox* r = malloc(sizeof *r);
-  r->pd=pd; r->srcParty=srcParty; r->keyBytes=keyBytes;
+  r->keyBytes=keyBytes;
   char seed0[k*OT_SEEDLEN], seed1[k*OT_SEEDLEN];
   gcry_randomize(seed0,sizeof(seed0),GCRY_STRONG_RANDOM);
   gcry_randomize(seed1,sizeof(seed1),GCRY_STRONG_RANDOM);
@@ -733,14 +731,15 @@ recverExtensionBoxRelease (RecverExtensionBox* r)
    mask[] (in recver) should be of length rowBytes
 */
 void
-senderExtensionBox(SenderExtensionBox* s,char box[],size_t rowBytes)
+senderExtensionBox(ProtocolDesc* pd, int destParty, SenderExtensionBox* s,
+                   char box[],size_t rowBytes)
 {
   const int k = s->keyBytes*8;
   int i;
   char *keymine = malloc(k*rowBytes);
   for(i=0;i<k;++i)
     randomizeBuffer(s->keyblock[i],keymine+i*rowBytes,rowBytes);
-  orecv(s->pd,s->destParty,box,k*rowBytes);
+  orecv(pd,destParty,box,k*rowBytes);
   for(i=0;i<k;++i)
   { char *keybox = box+i*rowBytes;
     if(s->S[i]) memxor(keybox,keymine+i*rowBytes,rowBytes);
@@ -749,8 +748,8 @@ senderExtensionBox(SenderExtensionBox* s,char box[],size_t rowBytes)
   free(keymine);
 }
 void
-recverExtensionBox(RecverExtensionBox* r,char box[],
-                   const char mask[],size_t rowBytes)
+recverExtensionBox(ProtocolDesc* pd, int srcParty, RecverExtensionBox* r,
+                   char box[], const char mask[],size_t rowBytes)
 {
   const int k = r->keyBytes*8;
   int i;
@@ -765,7 +764,7 @@ recverExtensionBox(RecverExtensionBox* r,char box[],
     memxor(key1,key0,rowBytes);
     memxor(key1,mask,rowBytes);
   }
-  osend(r->pd,r->srcParty,keyxor,k*rowBytes);
+  osend(pd,srcParty,keyxor,k*rowBytes);
   free(keyxor);
 }
 
@@ -837,20 +836,20 @@ void* bitmatMul_thread(void* args)
    the "usable" part of mask).
 */
 bool
-senderExtensionBoxValidate_hhash(SenderExtensionBox* s,BCipherRandomGen* gen,
-                                 const char box[],size_t rowBytes)
+senderExtensionBoxValidate_hhash(ProtocolDesc* pd, int destParty, SenderExtensionBox* s,
+                                 BCipherRandomGen* gen, const char box[],size_t rowBytes)
 {
   const int k = s->keyBytes*8, hlen = CHECK_HASH_BYTES;
   char *hashmat = malloc(rowBytes*8*hlen);
   char hashcur[k][hlen],hash0[hlen],hashxor[hlen];
   bool xorseen = false, res = true;
 
-  if(!ocRandomBytes(s->pd,gen,hashmat,rowBytes*8*hlen,s->destParty)) 
+  if(!ocRandomBytes(pd,gen,hashmat,rowBytes*8*hlen,destParty)) 
     return false;
   int i,done=0,tc;
   BitMatMulThread args[OT_THREAD_COUNT];
   pthread_t hasht[OT_THREAD_COUNT];
-  if(!protoCanThread(s->pd) || 8*rowBytes<=OT_THREAD_THRESHOLD) tc=1;
+  if(!protoCanThread(pd) || 8*rowBytes<=OT_THREAD_THRESHOLD) tc=1;
   else tc=OT_THREAD_COUNT;
   for(i=0;i<tc;++i)
   {
@@ -864,7 +863,7 @@ senderExtensionBoxValidate_hhash(SenderExtensionBox* s,BCipherRandomGen* gen,
   for(i=0;i<tc-1;++i) pthread_join(hasht[i],NULL);
   for(i=0;i<k;++i)
   { //bitmatMul(hashcur,hashmat,box+i*rowBytes,8*hlen,8*rowBytes);
-    orecv(s->pd,s->destParty,hash0,hlen);
+    orecv(pd,destParty,hash0,hlen);
     if(s->S[i])
     { memxor(hashcur[i],hash0,hlen);
       if(xorseen && memcmp(hashxor,hashcur[i],hlen)) res = false;
@@ -878,18 +877,18 @@ senderExtensionBoxValidate_hhash(SenderExtensionBox* s,BCipherRandomGen* gen,
    was trying to select a special validation hash matrix that would have
    revealed receiver's choice mask */
 bool
-recverExtensionBoxValidate_hhash(RecverExtensionBox* r,BCipherRandomGen* gen,
-                                 const char box[],size_t rowBytes)
+recverExtensionBoxValidate_hhash(ProtocolDesc* pd, int srcParty, RecverExtensionBox* r,
+                                 BCipherRandomGen* gen, const char box[],size_t rowBytes)
 {
   const int k = r->keyBytes*8, hlen = CHECK_HASH_BYTES;
   char *hashmat = malloc(rowBytes*8*hlen);
   char hashcur[k][hlen];
-  if(!ocRandomBytes(r->pd,gen,hashmat,rowBytes*8*hlen,r->srcParty)) 
+  if(!ocRandomBytes(pd,gen,hashmat,rowBytes*8*hlen,srcParty)) 
     return false;
   int i,done=0,tc;
   BitMatMulThread args[OT_THREAD_COUNT];
   pthread_t hasht[OT_THREAD_COUNT];
-  if(!protoCanThread(r->pd) || 8*rowBytes<=OT_THREAD_THRESHOLD) tc=1;
+  if(!protoCanThread(pd) || 8*rowBytes<=OT_THREAD_THRESHOLD) tc=1;
   else tc=OT_THREAD_COUNT;
   for(i=0;i<tc;++i)
   {
@@ -903,7 +902,7 @@ recverExtensionBoxValidate_hhash(RecverExtensionBox* r,BCipherRandomGen* gen,
   for(i=0;i<tc-1;++i) pthread_join(hasht[i],NULL);
   for(i=0;i<k;++i)
   { //bitmatMul(hashcur,hashmat,box+i*rowBytes,8*hlen,8*rowBytes);
-    osend(r->pd,r->srcParty,hashcur[i],hlen);
+    osend(pd,srcParty,hashcur[i],hlen);
   }
   free(hashmat);
   return true;
@@ -930,7 +929,8 @@ recverExtensionBoxValidate_hhash(RecverExtensionBox* r,BCipherRandomGen* gen,
    leak (half the rows are revealed each time).
 */
 bool
-senderExtensionBoxValidate_byPair(SenderExtensionBox* s,BCipherRandomGen* gen,
+senderExtensionBoxValidate_byPair(ProtocolDesc* pd, int destParty,
+                                  SenderExtensionBox* s,BCipherRandomGen* gen,
                                   int rowsRemaining[],
                                   const char box[], int rowBytes,bool dohash)
 {
@@ -940,21 +940,21 @@ senderExtensionBoxValidate_byPair(SenderExtensionBox* s,BCipherRandomGen* gen,
   char *rowxme = malloc(rowBytes), *rowxyou = (dohash?NULL:malloc(rowBytes));
   char phair_hash[PHAIR_HASHLEN], phair_hash_you[PHAIR_HASHLEN];
   bcRandomPermutation(gen,perm,k);
-  osend(s->pd,s->destParty,perm,sizeof(int[k]));
+  osend(pd,destParty,perm,sizeof(int[k]));
   for(i=0;i<k;i+=2)
   { int a = perm[i], b = perm[i+1];
     rowsRemaining[i/2]=a;
     sx = (s->S[a]!=s->S[b]);
-    osend(s->pd,s->destParty,&sx,sizeof(bool));
+    osend(pd,destParty,&sx,sizeof(bool));
     memcpy(rowxme,box+a*rowBytes,rowBytes);
     memxor(rowxme,box+b*rowBytes,rowBytes);
     if(dohash)
     { gcry_md_hash_buffer(PHAIR_ALGO,phair_hash,rowxme,rowBytes);
-      orecv(s->pd,s->destParty,phair_hash_you,PHAIR_HASHLEN);
+      orecv(pd,destParty,phair_hash_you,PHAIR_HASHLEN);
       if(memcmp(phair_hash,phair_hash_you,PHAIR_HASHLEN)) res=false;
     }
     else
-    { orecv(s->pd,s->destParty,rowxyou,rowBytes);
+    { orecv(pd,destParty,rowxyou,rowBytes);
       if(memcmp(rowxme,rowxyou,rowBytes)) res=false;
     }
   }
@@ -968,7 +968,8 @@ senderExtensionBoxValidate_byPair(SenderExtensionBox* s,BCipherRandomGen* gen,
 // the set of rows that should be used (using all rows in box will not add
 // any security)
 bool
-recverExtensionBoxValidate_byPair(RecverExtensionBox* r,BCipherRandomGen* gen,
+recverExtensionBoxValidate_byPair(ProtocolDesc* pd, int srcParty,
+                                  RecverExtensionBox* r,BCipherRandomGen* gen,
                                   int rowsRemaining[],
                                   const char box[],const char mask[],
                                   int rowBytes,bool dohash)
@@ -978,7 +979,7 @@ recverExtensionBoxValidate_byPair(RecverExtensionBox* r,BCipherRandomGen* gen,
   bool sx, inperm[k];
   char *rowx = malloc(rowBytes);
   char phair_hash[PHAIR_HASHLEN];
-  orecv(r->pd,r->srcParty,perm,sizeof(int[k]));
+  orecv(pd,srcParty,perm,sizeof(int[k]));
   memset(inperm,0,sizeof(inperm));
   for(i=0;i<k;++i)
   { if(i<0||i>=k) return false;
@@ -990,13 +991,13 @@ recverExtensionBoxValidate_byPair(RecverExtensionBox* r,BCipherRandomGen* gen,
     rowsRemaining[i/2]=a;
     memcpy(rowx,box+a*rowBytes,rowBytes);
     memxor(rowx,box+b*rowBytes,rowBytes);
-    orecv(r->pd,r->srcParty,&sx,sizeof(bool));
+    orecv(pd,srcParty,&sx,sizeof(bool));
     if(sx) memxor(rowx,mask,rowBytes);
     if(dohash)
     { gcry_md_hash_buffer(PHAIR_ALGO,phair_hash,rowx,rowBytes);
-      osend(r->pd,r->srcParty,phair_hash,PHAIR_HASHLEN);
+      osend(pd,srcParty,phair_hash,PHAIR_HASHLEN);
     }
-    else osend(r->pd,r->srcParty,rowx,rowBytes);
+    else osend(pd,srcParty,rowx,rowBytes);
   }
   free(rowx);
   return true;
@@ -1046,7 +1047,8 @@ typedef struct
 { BCipherRandomGen *cipher;
   const char *box;
   HonestOTExtNonceTracker *nonce_trk;
-  int n, rowBytes, *rows, k, nonce, nonceDelta, len, destParty, c;
+  size_t nonce, nonceDelta;
+  int n, rowBytes, *rows, k, len, destParty, c;
   char *opt0, *opt1;
   const char *spack;
   ProtocolTransport *trans;
@@ -1114,8 +1116,8 @@ senderExtensionBoxSendMsg(SendMsgArgs* a)
 typedef struct
 { BCipherRandomGen *cipher;
   const char *box;
-  HonestOTExtNonceTracker *nonce_trk;
-  int n, rowBytes, *rows, k, nonce, nonceDelta, len, srcParty, c;
+  size_t nonce, nonceDelta;
+  int n, rowBytes, *rows, k, len, srcParty, c;
   char *msg;
   const char *mask; // Receiver's selections
   ProtocolTransport *trans;
@@ -1175,6 +1177,7 @@ static inline size_t honestOTExtNonceTrackerNext(HonestOTExtNonceTracker * t, si
 static void* senderExtensionBoxSendMsgs_thread(void* va)
 { SendMsgArgs* a=va;
   int i;
+  transSend(a->trans,a->destParty,&a->nonce,sizeof(a->nonce));
   sendBufInit(a);
   for(i=0;i<a->n;++i)
   { senderExtensionBoxSendMsg(a);
@@ -1197,7 +1200,7 @@ senderExtensionBoxSendMsgs(SendMsgArgs* a)
     { si[i]=*a;
       si[i].c=ndone;
       si[i].n=(a->n-ndone+tc-i-1)/(tc-i);
-      si[i].nonce=honestOTExtNonceTrackerNext(a->nonce_trk, a->nonceDelta);
+      si[i].nonce=honestOTExtNonceTrackerNext(a->nonce_trk, si[i].n*a->nonceDelta);
       si[i].opt0=a->opt0+a->len*ndone;
       si[i].opt1=a->opt1+a->len*ndone;
       si[i].trans=a->trans->split(a->trans);
@@ -1217,6 +1220,7 @@ senderExtensionBoxSendMsgs(SendMsgArgs* a)
 static void* recverExtensionBoxRecvMsgs_thread(void* va)
 { RecvMsgArgs* a=va;
   int i;
+  transRecv(a->trans,a->srcParty,&a->nonce,sizeof(a->nonce));
   recvBufInit(a);
   for(i=0;i<a->n;++i)
   { recverExtensionBoxRecvMsg(a);
@@ -1239,7 +1243,6 @@ recverExtensionBoxRecvMsgs(RecvMsgArgs* a)
     { ri[i]=*a;
       ri[i].c=ndone;
       ri[i].n=(a->n-ndone+tc-i-1)/(tc-i);
-      ri[i].nonce=honestOTExtNonceTrackerNext(a->nonce_trk, a->nonceDelta);
       ri[i].msg=a->msg+a->len*ndone;
       ri[i].trans=a->trans->split(a->trans);
       ri[i].cipher=copyBCipherRandomGenNoKey(a->cipher);
@@ -1273,15 +1276,20 @@ struct HonestOTExtNonceTracker
 };
 
 typedef struct HonestOTExtSender
-{ SenderExtensionBox* box;
+{ ProtocolDesc* pd;
+  int destParty;
+  SenderExtensionBox* box;
   BCipherRandomGen* padder;
-  HonestOTExtNonceTracker * nonce_trk;
+  HonestOTExtNonceTracker* nonce_trk;
+  int* ref_count;
 } HonestOTExtSender;
 
 typedef struct HonestOTExtRecver
-{ RecverExtensionBox* box;
+{ ProtocolDesc* pd;
+  int srcParty;
+  RecverExtensionBox* box;
   BCipherRandomGen* padder;
-  HonestOTExtNonceTracker * nonce_trk;
+  int* ref_count;
 } HonestOTExtRecver;
 
 void honestOTExtNonceTrackerInit(HonestOTExtNonceTracker * t, HonestOTExtNonceDistributor * dist)
@@ -1333,9 +1341,12 @@ void honestOTExtNonceTrackerRelease(HonestOTExtNonceTracker * t)
 void
 honestOTExtSenderInit(HonestOTExtSender* s,ProtocolDesc* pd,
                       int destParty,int keyBytes)
-{ s->box = senderExtensionBoxNew(pd,destParty,keyBytes);
+{ s->pd = pd; s->destParty = destParty;
+  s->box = senderExtensionBoxNew(pd,destParty,keyBytes);
   s->padder = newBCipherRandomGen();
   s->nonce_trk = honestOTExtNonceTrackerNew(NULL);
+  s->ref_count = malloc(sizeof(*s->ref_count));
+  *s->ref_count = 1;
 }
 HonestOTExtSender*
 honestOTExtSenderNew(ProtocolDesc* pd,int destParty)
@@ -1343,12 +1354,25 @@ honestOTExtSenderNew(ProtocolDesc* pd,int destParty)
   honestOTExtSenderInit(s,pd,destParty,OT_KEY_BYTES_HONEST);
   return s;
 }
+HonestOTExtSender*
+honestOTExtSenderSplit(HonestOTExtSender* t, ProtocolDesc* pd)
+{ HonestOTExtSender* s = malloc(sizeof *s);
+  s->pd = pd; s->destParty = t->destParty;
+  s->box = t->box;
+  s->ref_count = t->ref_count;
+  __atomic_add_fetch(s->ref_count, 1, __ATOMIC_RELAXED);
+  s->padder = copyBCipherRandomGenNoKey(t->padder);
+  s->nonce_trk = honestOTExtNonceTrackerNew(t->nonce_trk->dist);
+  return s;
+}
 void
 honestOTExtRecverInit(HonestOTExtRecver* r,ProtocolDesc* pd,
                       int srcParty,int keyBytes)
-{ r->box = recverExtensionBoxNew(pd,srcParty,keyBytes);
+{ r->pd = pd; r->srcParty = srcParty;
+  r->box = recverExtensionBoxNew(pd,srcParty,keyBytes);
   r->padder = newBCipherRandomGen();
-  r->nonce_trk = honestOTExtNonceTrackerNew(NULL);
+  r->ref_count = malloc(sizeof(*r->ref_count));
+  *r->ref_count = 1;
 }
 HonestOTExtRecver*
 honestOTExtRecverNew(ProtocolDesc* pd,int srcParty)
@@ -1356,9 +1380,19 @@ honestOTExtRecverNew(ProtocolDesc* pd,int srcParty)
   honestOTExtRecverInit(r,pd,srcParty,OT_KEY_BYTES_HONEST);
   return r;
 }
+HonestOTExtRecver*
+honestOTExtRecverSplit(HonestOTExtRecver* t, ProtocolDesc* pd)
+{ HonestOTExtRecver* r = malloc(sizeof *r);
+  r->pd = pd; r->srcParty = t->srcParty;
+  r->box = t->box;
+  r->ref_count = t->ref_count;
+  __atomic_add_fetch(r->ref_count, 1, __ATOMIC_RELAXED);
+  r->padder = copyBCipherRandomGenNoKey(t->padder);
+  return r;
+}
 void
 honestOTExtSenderCleanup(HonestOTExtSender* s)
-{ senderExtensionBoxRelease(s->box);
+{ if (__atomic_sub_fetch(&s->ref_count, 1, __ATOMIC_RELAXED) == 0) senderExtensionBoxRelease(s->box);
   releaseBCipherRandomGen(s->padder);
   honestOTExtNonceTrackerRelease(s->nonce_trk);
 }
@@ -1369,9 +1403,8 @@ honestOTExtSenderRelease(HonestOTExtSender* s)
 }
 void
 honestOTExtRecverCleanup(HonestOTExtRecver* r)
-{ recverExtensionBoxRelease(r->box);
+{ if (__atomic_sub_fetch(&r->ref_count, 1, __ATOMIC_RELAXED) == 0) recverExtensionBoxRelease(r->box);
   releaseBCipherRandomGen(r->padder);
-  honestOTExtNonceTrackerRelease(r->nonce_trk);
 }
 void
 honestOTExtRecverRelease(HonestOTExtRecver* r)
@@ -1387,13 +1420,13 @@ void* honestOTExtSend1Of2Start(HonestOTExtSender* s,int n)
   const int blen = s->padder->blen;
   char *box = malloc(k*rowBytes);
   int *all = allRows(k);
-  senderExtensionBox(s->box,box,rowBytes);
+  senderExtensionBox(s->pd,s->destParty,s->box,box,rowBytes);
   *args = (SendMsgArgs) {
     .cipher=s->padder, .box=box, .n=n, .rowBytes=rowBytes, .rows=all,
     .k=k, .nonce_trk=s->nonce_trk, .nonceDelta = 0, .c=0,
     .opt0=NULL, .opt1=NULL, .len=0,
-    .destParty=s->box->destParty, .spack=s->box->spack,
-    .trans=s->box->pd->trans, .corrFun=NULL, .corrArg=NULL,
+    .destParty=s->destParty, .spack=s->box->spack,
+    .trans=s->pd->trans, .corrFun=NULL, .corrArg=NULL,
     .sender=s
   };
   return args;
@@ -1452,13 +1485,13 @@ void* honestOTExtRecv1Of2Start(HonestOTExtRecver* r,const bool* sel,int n)
   char *box = malloc(k*rowBytes);
   int *all = allRows(k);
   char *mask = malloc(rowBytes); packBytes(mask,sel,n);
-  recverExtensionBox(r->box,box,mask,rowBytes);
+  recverExtensionBox(r->pd,r->srcParty,r->box,box,mask,rowBytes);
   *args = (RecvMsgArgs) {
     .cipher=r->padder, .box=box, .n=n, .rowBytes=rowBytes, .rows=all,
-    .k=k, .nonce_trk=r->nonce_trk, .nonceDelta = 0, .c=0,
+    .k=k, .nonceDelta = 0, .c=0,
     .msg=NULL, .mask=mask, .len=0,
-    .srcParty=r->box->srcParty,
-    .trans=r->box->pd->trans, .isCorr = false,
+    .srcParty=r->srcParty,
+    .trans=r->pd->trans, .isCorr = false,
     .recver=r
   };
   return args;
@@ -1477,7 +1510,6 @@ void honestOTExtRecv1Of2Chunk(void* vargs,char* dest,int nchunk,
   suba.n=nchunk;
   suba.msg=dest;
   suba.len=len;
-  suba.nonce_trk=((HonestOTExtRecver*)args->recver)->nonce_trk;
   suba.nonceDelta = (len+suba.cipher->blen-1)/suba.cipher->blen;
   suba.isCorr=isCorr;
   recverExtensionBoxRecvMsgs(&suba);
@@ -1585,7 +1617,7 @@ void
 otExtSend1Of2(OTExtSender* ss,const char* opt0,const char* opt1,
               int n,int len)
 {
-  if(ss->hs.box->pd->error) return;
+  if(ss->hs.pd->error) return;
   HonestOTExtSender* s = &ss->hs;
   const int k = 8*s->box->keyBytes;
   int rowBytes, *rows, rc;
@@ -1597,17 +1629,17 @@ otExtSend1Of2(OTExtSender* ss,const char* opt0,const char* opt1,
 #ifndef PHASE_TIME_UPTO_BASE_OT
   char *box = malloc(k*rowBytes);
   bool error = false;
-  senderExtensionBox(s->box,box,rowBytes);
+  senderExtensionBox(s->pd,s->destParty,s->box,box,rowBytes);
 #ifndef PHASE_TIME_UPTO_EXTENSION
   if(ss->validation==OTExtValidation_hhash)
   { rows = allRows(k);
     rc = k;
-    if(!senderExtensionBoxValidate_hhash(s->box,ss->gen,box,rowBytes))
+    if(!senderExtensionBoxValidate_hhash(s->pd,s->destParty,s->box,ss->gen,box,rowBytes))
       error = true;
   }else
   { rows = malloc(sizeof(int[k/2]));
     rc = k/2;
-    if(!senderExtensionBoxValidate_byPair(s->box,ss->gen,rows,box,rowBytes,
+    if(!senderExtensionBoxValidate_byPair(s->pd,s->destParty,s->box,ss->gen,rows,box,rowBytes,
             ss->validation==OTExtValidation_byPhair))
       error = true;
     int i;
@@ -1615,14 +1647,14 @@ otExtSend1Of2(OTExtSender* ss,const char* opt0,const char* opt1,
   }
 #ifndef PHASE_TIME_UPTO_VALIDATION
   const int blen = s->padder->blen;
-  if(error) s->box->pd->error = OC_ERROR_OT_EXTENSION;
+  if(error) s->pd->error = OC_ERROR_OT_EXTENSION;
   else
   { SendMsgArgs args = {
       .cipher=s->padder, .box=box, .n=n, .rowBytes=rowBytes, .rows=rows,
       .k=rc, .nonce_trk=s->nonce_trk, .nonceDelta=(len+blen-1)/blen,
       .opt0=(char*)opt0, .opt1=(char*)opt1, .len=len,
-      .destParty=s->box->destParty, .spack=s->box->spack,
-      .trans=s->box->pd->trans, .corrFun=NULL, .corrArg=NULL
+      .destParty=s->destParty, .spack=s->box->spack,
+      .trans=s->pd->trans, .corrFun=NULL, .corrArg=NULL
     };
     senderExtensionBoxSendMsgs(&args);
   }
@@ -1636,7 +1668,7 @@ void
 otExtRecv1Of2(OTExtRecver* rr,char* dest,const bool* sel,
               int n,int len)
 {
-  if(rr->hr.box->pd->error) return;
+  if(rr->hr.pd->error) return;
   HonestOTExtRecver* r = &rr->hr;
   const int k = 8*r->box->keyBytes;
   int rowBytes,*rows,rc;
@@ -1651,30 +1683,30 @@ otExtRecv1Of2(OTExtRecver* rr,char* dest,const bool* sel,
   char *mask = malloc(rowBytes);
   randomizeBuffer(rr->gen,mask,rowBytes);
   packBytes(mask,sel,n);
-  recverExtensionBox(r->box,box,mask,rowBytes);
+  recverExtensionBox(r->pd,r->srcParty,r->box,box,mask,rowBytes);
 #ifndef PHASE_TIME_UPTO_EXTENSION
   if(rr->validation==OTExtValidation_hhash)
   { rows = allRows(k);
     rc=k;
-    if(!recverExtensionBoxValidate_hhash(r->box,rr->gen,box,rowBytes))
+    if(!recverExtensionBoxValidate_hhash(r->pd,r->srcParty,r->box,rr->gen,box,rowBytes))
       error = true;
   }else
   { rows = malloc(sizeof(int[k/2]));
     rc=k/2;
-    if(!recverExtensionBoxValidate_byPair(r->box,rr->gen,rows,
+    if(!recverExtensionBoxValidate_byPair(r->pd,r->srcParty,r->box,rr->gen,rows,
             box,mask,rowBytes,rr->validation==OTExtValidation_byPhair))
       error = true;
   }
 #ifndef PHASE_TIME_UPTO_VALIDATION
   const int blen = r->padder->blen;
-  if(error) r->box->pd->error = OC_ERROR_OT_EXTENSION;
+  if(error) r->pd->error = OC_ERROR_OT_EXTENSION;
   else
   {
     RecvMsgArgs args = {
       .cipher=r->padder, .box=box, .n=n, .rowBytes=rowBytes, .rows=rows,
-      .k=rc, .nonce_trk=r->nonce_trk, .nonceDelta=(len+blen-1)/blen,
+      .k=rc, .nonceDelta=(len+blen-1)/blen,
       .msg=dest, .mask=mask, .len=len,
-      .srcParty=r->box->srcParty, .trans=r->box->pd->trans, .isCorr = false
+      .srcParty=r->srcParty, .trans=r->pd->trans, .isCorr = false
     };
     recverExtensionBoxRecvMsgs(&args);
   }
