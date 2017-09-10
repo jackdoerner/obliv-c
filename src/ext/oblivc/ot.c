@@ -1306,16 +1306,9 @@ static int* allRows(int n)
   return res;
 }
 
-typedef struct HonestOTExtNonceDistributor
-{ size_t next_nonce;
-  size_t nonce_delta;
-  size_t ref_count;
-} HonestOTExtNonceDistributor;
-
 struct HonestOTExtNonceTracker
-{ HonestOTExtNonceDistributor * dist;
-  size_t nonce_current;
-  size_t nonce_max;
+{ size_t * nonce_master;
+  size_t * ref_count;
 };
 
 typedef struct HonestOTExtSender
@@ -1333,43 +1326,36 @@ typedef struct HonestOTExtRecver
   BCipherRandomGen* padder;
 } HonestOTExtRecver;
 
-void honestOTExtNonceTrackerInit(HonestOTExtNonceTracker * t, HonestOTExtNonceDistributor * dist)
-{ if (dist == NULL)
+void honestOTExtNonceTrackerInit(HonestOTExtNonceTracker * t, HonestOTExtNonceTracker * t_prev)
+{ if (t_prev == NULL)
   {
-    dist = malloc(sizeof(HonestOTExtNonceDistributor));
-    dist->nonce_delta = 1 << 5;
-    dist->next_nonce = 0;
-    dist->ref_count = 1;
+    t->nonce_master = malloc(sizeof(*t->nonce_master));
+    t->ref_count = malloc(sizeof(*t->ref_count));
+    *t->ref_count = 1;
   }
   else
   {
-    __atomic_add_fetch(&dist->ref_count, 1, __ATOMIC_RELAXED);
+    t->nonce_master = t_prev->nonce_master;
+    t->ref_count = t_prev->ref_count;
+    __atomic_add_fetch(t->ref_count, 1, __ATOMIC_RELAXED);
   }
-  t->dist = dist;
-  t->nonce_max = 0;
-  t->nonce_current = 0;
 }
 
-HonestOTExtNonceTracker * honestOTExtNonceTrackerNew(HonestOTExtNonceDistributor * dist)
+HonestOTExtNonceTracker * honestOTExtNonceTrackerNew(HonestOTExtNonceTracker * t_prev)
 { HonestOTExtNonceTracker * t = malloc(sizeof(HonestOTExtNonceTracker));
-  honestOTExtNonceTrackerInit(t, dist);
+  honestOTExtNonceTrackerInit(t, t_prev);
   return t;
 }
 
 static inline size_t honestOTExtNonceTrackerNext(HonestOTExtNonceTracker * t, size_t small_delta)
-{ if (t->nonce_current + small_delta >= t->nonce_max) 
-  { size_t nonce_dist_mul = (small_delta + t->dist->nonce_delta - 1) / t->dist->nonce_delta;
-    if (nonce_dist_mul == 0) nonce_dist_mul = 1;
-    t->nonce_current = __atomic_fetch_add(&t->dist->next_nonce, t->dist->nonce_delta * nonce_dist_mul, __ATOMIC_RELAXED);
-    t->nonce_max = t->nonce_current + (t->dist->nonce_delta * nonce_dist_mul);
-  }
-  size_t res = t->nonce_current;
-  t->nonce_current+=small_delta;
-  return res;
-}
+{ return __atomic_fetch_add(t->nonce_master, small_delta, __ATOMIC_RELAXED); }
 
 void honestOTExtNonceTrackerCleanup(HonestOTExtNonceTracker * t)
-{ if (__atomic_sub_fetch(&t->dist->ref_count, 1, __ATOMIC_RELAXED) == 0) free(t->dist); }
+{ if (__atomic_sub_fetch(t->ref_count, 1, __ATOMIC_RELAXED) == 0) {
+    free(t->ref_count);
+    free(t->nonce_master); 
+  }
+}
 
 void honestOTExtNonceTrackerRelease(HonestOTExtNonceTracker * t)
 { honestOTExtNonceTrackerCleanup(t);
@@ -1399,7 +1385,7 @@ honestOTExtSenderSplit(HonestOTExtSender* t, ProtocolDesc* pd)
   s->pd = pd; s->destParty = t->destParty;
   s->box = senderExtensionBoxSplit(t->box);
   s->padder = copyBCipherRandomGenNoKey(t->padder);
-  s->nonce_trk = honestOTExtNonceTrackerNew(t->nonce_trk->dist);
+  s->nonce_trk = honestOTExtNonceTrackerNew(t->nonce_trk);
   return s;
 }
 void
