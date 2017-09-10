@@ -642,7 +642,7 @@ packBytes(char* dest,const bool* src,int bits)
 */
 typedef struct
 {
-  int destParty, keyBytes;
+  int keyBytes;
   BCipherRandomGen **keyblock;
   bool *S;
   char *spack; // same as S, in packed bytes;
@@ -671,6 +671,29 @@ senderExtensionBoxNew (ProtocolDesc* pd, int destParty, int keyBytes)
 
   return s;
 }
+SenderExtensionBox*
+senderExtensionBoxSplit (SenderExtensionBox* t)
+{
+  const int k = t->keyBytes*8;
+  SenderExtensionBox* s = malloc(sizeof *s);
+  s->keyBytes = k/8;
+  s->spack = malloc(sizeof(char[k/8]));
+  memcpy(s->spack,t->spack,k/8);
+  s->S = malloc(sizeof(bool[k]));
+  memcpy(s->S,t->S,sizeof(bool[k]));
+  s->keyblock = malloc(sizeof(BCipherRandomGen*[k]));
+
+  // Initialize s->keyblock
+  char seed[OT_SEEDLEN];
+  int i;
+  for(i=0;i<k;++i)
+  { randomizeBuffer(t->keyblock[i], seed, OT_SEEDLEN);
+    s->keyblock[i] = newBCipherRandomGenByKey(seed);
+  }
+
+  return s;
+}
+
 void
 senderExtensionBoxRelease (SenderExtensionBox* s)
 {
@@ -685,7 +708,7 @@ senderExtensionBoxRelease (SenderExtensionBox* s)
 
 typedef struct
 {
-  int srcParty, keyBytes;
+  int keyBytes;
   BCipherRandomGen **keyblock0, **keyblock1;
 } RecverExtensionBox;
 
@@ -710,6 +733,26 @@ recverExtensionBoxNew (ProtocolDesc* pd, int srcParty, int keyBytes)
   }
   return r;
 }
+
+RecverExtensionBox*
+recverExtensionBoxSplit (RecverExtensionBox* t)
+{
+  const int k = t->keyBytes*8;
+  RecverExtensionBox* r = malloc(sizeof *r);
+  r->keyBytes=t->keyBytes;
+  char seed[OT_SEEDLEN];
+  int i;
+  r->keyblock0 = malloc(sizeof(BCipherRandomGen*[k]));
+  r->keyblock1 = malloc(sizeof(BCipherRandomGen*[k]));
+  for(i=0;i<k;++i)
+  { randomizeBuffer(t->keyblock0[i], seed, OT_SEEDLEN);
+    r->keyblock0[i] = newBCipherRandomGenByKey(seed);
+    randomizeBuffer(t->keyblock1[i], seed, OT_SEEDLEN);
+    r->keyblock1[i] = newBCipherRandomGenByKey(seed);
+  }
+  return r;
+}
+
 void
 recverExtensionBoxRelease (RecverExtensionBox* r)
 {
@@ -1281,7 +1324,6 @@ typedef struct HonestOTExtSender
   SenderExtensionBox* box;
   BCipherRandomGen* padder;
   HonestOTExtNonceTracker* nonce_trk;
-  int* ref_count;
 } HonestOTExtSender;
 
 typedef struct HonestOTExtRecver
@@ -1289,14 +1331,13 @@ typedef struct HonestOTExtRecver
   int srcParty;
   RecverExtensionBox* box;
   BCipherRandomGen* padder;
-  int* ref_count;
 } HonestOTExtRecver;
 
 void honestOTExtNonceTrackerInit(HonestOTExtNonceTracker * t, HonestOTExtNonceDistributor * dist)
 { if (dist == NULL)
   {
     dist = malloc(sizeof(HonestOTExtNonceDistributor));
-    dist->nonce_delta = 1 << 10;
+    dist->nonce_delta = 1 << 5;
     dist->next_nonce = 0;
     dist->ref_count = 1;
   }
@@ -1345,8 +1386,6 @@ honestOTExtSenderInit(HonestOTExtSender* s,ProtocolDesc* pd,
   s->box = senderExtensionBoxNew(pd,destParty,keyBytes);
   s->padder = newBCipherRandomGen();
   s->nonce_trk = honestOTExtNonceTrackerNew(NULL);
-  s->ref_count = malloc(sizeof(*s->ref_count));
-  *s->ref_count = 1;
 }
 HonestOTExtSender*
 honestOTExtSenderNew(ProtocolDesc* pd,int destParty)
@@ -1358,9 +1397,7 @@ HonestOTExtSender*
 honestOTExtSenderSplit(HonestOTExtSender* t, ProtocolDesc* pd)
 { HonestOTExtSender* s = malloc(sizeof *s);
   s->pd = pd; s->destParty = t->destParty;
-  s->box = t->box;
-  s->ref_count = t->ref_count;
-  __atomic_add_fetch(s->ref_count, 1, __ATOMIC_RELAXED);
+  s->box = senderExtensionBoxSplit(t->box);
   s->padder = copyBCipherRandomGenNoKey(t->padder);
   s->nonce_trk = honestOTExtNonceTrackerNew(t->nonce_trk->dist);
   return s;
@@ -1371,8 +1408,6 @@ honestOTExtRecverInit(HonestOTExtRecver* r,ProtocolDesc* pd,
 { r->pd = pd; r->srcParty = srcParty;
   r->box = recverExtensionBoxNew(pd,srcParty,keyBytes);
   r->padder = newBCipherRandomGen();
-  r->ref_count = malloc(sizeof(*r->ref_count));
-  *r->ref_count = 1;
 }
 HonestOTExtRecver*
 honestOTExtRecverNew(ProtocolDesc* pd,int srcParty)
@@ -1384,15 +1419,13 @@ HonestOTExtRecver*
 honestOTExtRecverSplit(HonestOTExtRecver* t, ProtocolDesc* pd)
 { HonestOTExtRecver* r = malloc(sizeof *r);
   r->pd = pd; r->srcParty = t->srcParty;
-  r->box = t->box;
-  r->ref_count = t->ref_count;
-  __atomic_add_fetch(r->ref_count, 1, __ATOMIC_RELAXED);
+  r->box = recverExtensionBoxSplit(t->box);
   r->padder = copyBCipherRandomGenNoKey(t->padder);
   return r;
 }
 void
 honestOTExtSenderCleanup(HonestOTExtSender* s)
-{ if (__atomic_sub_fetch(&s->ref_count, 1, __ATOMIC_RELAXED) == 0) senderExtensionBoxRelease(s->box);
+{ senderExtensionBoxRelease(s->box);
   releaseBCipherRandomGen(s->padder);
   honestOTExtNonceTrackerRelease(s->nonce_trk);
 }
@@ -1403,7 +1436,7 @@ honestOTExtSenderRelease(HonestOTExtSender* s)
 }
 void
 honestOTExtRecverCleanup(HonestOTExtRecver* r)
-{ if (__atomic_sub_fetch(&r->ref_count, 1, __ATOMIC_RELAXED) == 0) recverExtensionBoxRelease(r->box);
+{ recverExtensionBoxRelease(r->box);
   releaseBCipherRandomGen(r->padder);
 }
 void
