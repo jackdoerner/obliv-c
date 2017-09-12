@@ -1079,7 +1079,69 @@ bcipherCryptNoResize(BCipherRandomGen* gen,const char* key,int nonce,
   randomizeBuffer(gen,dest,n);
   memxor(dest,src,n);
 }
-typedef struct HonestOTExtNonceTracker HonestOTExtNonceTracker;
+
+
+/* 
+   Data structures and functions for dealing with multithreaded nonce-allocation
+   We use gcc's built-in atomics rather than synchronization primitives. On modern CPUs
+   these translate directly into instructions, so they're pretty quick. The reason for
+   all this complication: setting up OT extensions afresh is really expensive, so we
+   want to be able to reuse a single instance across multiple threads
+   */
+
+typedef struct HonestOTExtNonceTracker
+{ size_t * nonce_master;
+  size_t * ref_count;
+} HonestOTExtNonceTracker;
+
+typedef struct HonestOTExtSender
+{ SenderExtensionBox* box;
+  BCipherRandomGen* padder;
+  HonestOTExtNonceTracker* nonce_trk;
+} HonestOTExtSender;
+
+typedef struct HonestOTExtRecver
+{ RecverExtensionBox* box;
+  BCipherRandomGen* padder;
+} HonestOTExtRecver;
+
+void honestOTExtNonceTrackerInit(HonestOTExtNonceTracker * t, HonestOTExtNonceTracker * t_prev)
+{ if (t_prev == NULL)
+  {
+    t->nonce_master = malloc(sizeof(*t->nonce_master));
+    t->ref_count = malloc(sizeof(*t->ref_count));
+    *t->ref_count = 1;
+  }
+  else
+  {
+    t->nonce_master = t_prev->nonce_master;
+    t->ref_count = t_prev->ref_count;
+    __atomic_add_fetch(t->ref_count, 1, __ATOMIC_RELAXED);
+  }
+}
+
+HonestOTExtNonceTracker * honestOTExtNonceTrackerNew(HonestOTExtNonceTracker * t_prev)
+{ HonestOTExtNonceTracker * t = malloc(sizeof(HonestOTExtNonceTracker));
+  honestOTExtNonceTrackerInit(t, t_prev);
+  return t;
+}
+
+static inline size_t honestOTExtNonceTrackerNext(HonestOTExtNonceTracker * t, size_t small_delta)
+{ return __atomic_fetch_add(t->nonce_master, small_delta, __ATOMIC_RELAXED); }
+
+void honestOTExtNonceTrackerCleanup(HonestOTExtNonceTracker * t)
+{ if (__atomic_sub_fetch(t->ref_count, 1, __ATOMIC_RELAXED) == 0) {
+    free(t->ref_count);
+    free(t->nonce_master); 
+  }
+}
+
+void honestOTExtNonceTrackerRelease(HonestOTExtNonceTracker * t)
+{ honestOTExtNonceTrackerCleanup(t);
+  free(t);
+}
+
+
 /*
    Actually use our extension box (possibly after validation, depending on
    how much we trust our receiver). Sends out encryptions of msg0 and msg1
@@ -1311,58 +1373,6 @@ static int* allRows(int n)
 { int i,*res = malloc(sizeof(int[n]));
   for(i=0;i<n;++i) res[i]=i;
   return res;
-}
-
-struct HonestOTExtNonceTracker
-{ size_t * nonce_master;
-  size_t * ref_count;
-};
-
-typedef struct HonestOTExtSender
-{ SenderExtensionBox* box;
-  BCipherRandomGen* padder;
-  HonestOTExtNonceTracker* nonce_trk;
-} HonestOTExtSender;
-
-typedef struct HonestOTExtRecver
-{ RecverExtensionBox* box;
-  BCipherRandomGen* padder;
-} HonestOTExtRecver;
-
-void honestOTExtNonceTrackerInit(HonestOTExtNonceTracker * t, HonestOTExtNonceTracker * t_prev)
-{ if (t_prev == NULL)
-  {
-    t->nonce_master = malloc(sizeof(*t->nonce_master));
-    t->ref_count = malloc(sizeof(*t->ref_count));
-    *t->ref_count = 1;
-  }
-  else
-  {
-    t->nonce_master = t_prev->nonce_master;
-    t->ref_count = t_prev->ref_count;
-    __atomic_add_fetch(t->ref_count, 1, __ATOMIC_RELAXED);
-  }
-}
-
-HonestOTExtNonceTracker * honestOTExtNonceTrackerNew(HonestOTExtNonceTracker * t_prev)
-{ HonestOTExtNonceTracker * t = malloc(sizeof(HonestOTExtNonceTracker));
-  honestOTExtNonceTrackerInit(t, t_prev);
-  return t;
-}
-
-static inline size_t honestOTExtNonceTrackerNext(HonestOTExtNonceTracker * t, size_t small_delta)
-{ return __atomic_fetch_add(t->nonce_master, small_delta, __ATOMIC_RELAXED); }
-
-void honestOTExtNonceTrackerCleanup(HonestOTExtNonceTracker * t)
-{ if (__atomic_sub_fetch(t->ref_count, 1, __ATOMIC_RELAXED) == 0) {
-    free(t->ref_count);
-    free(t->nonce_master); 
-  }
-}
-
-void honestOTExtNonceTrackerRelease(HonestOTExtNonceTracker * t)
-{ honestOTExtNonceTrackerCleanup(t);
-  free(t);
 }
 
 #define OT_KEY_BYTES_HONEST 10

@@ -398,7 +398,5 @@
 /test/small2/merge-ar
 /test/small2/libmerge.a
 
-test/oblivc/common/util.o
-test/oblivc/protosplit/main.o
-test/oblivc/protosplit/protosplittest.o
-test/oblivc/protosplit/protosplittest.oo
+*.o
+*.oo
