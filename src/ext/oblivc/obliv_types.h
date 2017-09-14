@@ -110,8 +110,11 @@ typedef OTrecver COTrecver; // Strong typedef would have been nice
 typedef struct YaoProtocolDesc {
   char protoType;
   yao_key_t R,I; // LSB of R needs to be 1
-  uint64_t gcount, gcount_offset;
+  uint64_t gcount;
   uint64_t icount, ocount;
+  uint64_t ypdcount;
+  uint64_t * ypdcount_master;
+  uint64_t * ypdcount_refcount;
   bool ownOT;
   void (*nonFreeGate)(struct ProtocolDesc*,OblivBit*,char,
       const OblivBit*,const OblivBit*);

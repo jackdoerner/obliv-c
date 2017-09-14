@@ -584,6 +584,7 @@ const char yaoFixedKey[] = "\x61\x7e\x8d\xa2\xa0\x51\x1e\x96"
                            "\x5e\x41\xc2\x9b\x15\x3f\xc7\x7a";
 const int yaoFixedKeyAlgo = GCRY_CIPHER_AES128;
 #define FIXED_KEY_BLOCKLEN 16
+#define YAO_PROTO_COUNTER_LEN 2
 
 // Finite field doubling: used in fixed key garbling
 void yaoKeyDouble(yao_key_t d)
@@ -646,6 +647,9 @@ void yaoSetHalfMask(YaoProtocolDesc* ypd,
   for(i=YAO_KEY_BYTES;i<FIXED_KEY_BLOCKLEN;++i) buf[i]=0;
   yaoKeyCopy(buf,a); yaoKeyDouble(buf);
   for(i=0;i<sizeof(k);++i) buf[i]^=((k>>8*i)&0xff);
+  // copy only 16 bits worth of the protocol count: we should probably never
+  // split more than 2^16 distinct yao protocols
+  for(i=0;i<YAO_PROTO_COUNTER_LEN;++i) buf[i+sizeof(k)]^=((ypd->ypdcount>>8*i)&0xff);
   gcry_cipher_encrypt(ypd->fixedKeyCipher,obuf,sizeof(obuf),buf,sizeof(buf));
   yaoKeyCopy(d,obuf);
   yaoKeyXor(d,buf);
@@ -674,7 +678,9 @@ void yaoSetHalfMask2(YaoProtocolDesc* ypd,
   yaoKeyCopy(buf     ,a1); yaoKeyDouble(buf);
   yaoKeyCopy(buf+blen,a2); yaoKeyDouble(buf+blen);
   for(i=0;i<sizeof(k);++i) for(j=0;j<2;++j) buf[i+j*blen]^=((k>>8*i)&0xff);
-
+  // copy only 16 bits worth of the protocol count: we should probably never
+  // split more than 2^16 distinct yao protocols
+  for(i=0;i<YAO_PROTO_COUNTER_LEN;++i) for(j=0;j<2;++j) buf[i+sizeof(k)+j*blen]^=((ypd->ypdcount>>8*i)&0xff);
   gcry_cipher_encrypt(ypd->fixedKeyCipher,obuf,2*blen,buf,2*blen);
   if(obuf!=d1) { yaoKeyCopy(d1,obuf); yaoKeyCopy(d2,obuf+blen); }
   yaoKeyXor(d1,buf); yaoKeyXor(d2,buf+blen);
@@ -692,6 +698,9 @@ void yaoSetHashMask(YaoProtocolDesc* ypd,
   yaoKeyCopy(buf,a); yaoKeyDouble(buf);
   yaoKeyXor (buf,b); yaoKeyDouble(buf);
   for(i=0;i<sizeof(k);++i) buf[i]^=((k>>8*i)&0xff);
+  // copy only 16 bits worth of the protocol count: we should probably never
+  // split more than 2^16 distinct yao protocols
+  for(i=0;i<YAO_PROTO_COUNTER_LEN;++i) buf[i+sizeof(k)]^=((ypd->ypdcount>>8*i)&0xff);
   gcry_cipher_encrypt(ypd->fixedKeyCipher,obuf,sizeof(obuf),buf,sizeof(buf));
   yaoKeyCopy(d,obuf);
   yaoKeyXor(d,buf);
@@ -1001,7 +1010,7 @@ void yaoEvaluateHalfGatePair(ProtocolDesc* pd, OblivBit* r,
 }
 
 uint64_t yaoGateCount()
-{ uint64_t rv = ((YaoProtocolDesc*)currentProto->extra)->gcount - ((YaoProtocolDesc*)currentProto->extra)->gcount_offset;
+{ uint64_t rv = ((YaoProtocolDesc*)currentProto->extra)->gcount;
   if(currentProto->setBitAnd==yaoGenerateAndPair
       || currentProto->setBitAnd==yaoEvaluateHalfGatePair) // halfgate
     return rv/2;
@@ -1033,21 +1042,22 @@ void splitYaoProtocolExtra(ProtocolDesc* pdout, ProtocolDesc * pdin) {
 
   ypdout->protoType = ypdin->protoType;
   ypdout->extra = NULL;
-  ypdout->icount = ypdout->ocount = 0;
+  ypdout->icount = ypdout->ocount = ypdout->gcount = 0;
+  ypdout->ypdcount_master = ypdin->ypdcount_master;
+  ypdout->ypdcount_refcount = ypdin->ypdcount_refcount;
+  __atomic_add_fetch(ypdout->ypdcount_refcount, 1, __ATOMIC_RELAXED);
+  ypdout->ypdcount = __atomic_fetch_add(ypdin->ypdcount_master, 1, __ATOMIC_RELAXED);
+  if (ypdout->ypdcount >= (1 << 16)) fprintf(stderr, "Yao protocol has been split more than 2^%d times; security violations are likely.\n", 8*YAO_PROTO_COUNTER_LEN);
   ypdout->ownOT = true; // For now we don't do anything special for OT on forked protocols
   gcry_cipher_open(&ypdout->fixedKeyCipher,yaoFixedKeyAlgo,GCRY_CIPHER_MODE_ECB,0);
   gcry_cipher_setkey(ypdout->fixedKeyCipher,yaoFixedKey,sizeof(yaoFixedKey)-1);
   if (pdout->thisParty == 1) {
     memcpy(ypdout->R,ypdin->R,YAO_KEY_BYTES);
     gcry_randomize(ypdout->I,YAO_KEY_BYTES,GCRY_STRONG_RANDOM);
-    gcry_randomize(&ypdout->gcount_offset,sizeof(ypdout->gcount_offset),GCRY_STRONG_RANDOM);
-    osend(pdout,2,&ypdout->gcount_offset,sizeof(ypdout->gcount_offset));
     ypdout->sender = honestOTExtSenderAbstract(honestOTExtSenderNew(pdout,2));
   } else {
-    orecv(pdout,1,&ypdout->gcount_offset,sizeof(ypdout->gcount_offset));
     ypdout->recver = honestOTExtRecverAbstract(honestOTExtRecverNew(pdout,1));
   }
-  ypdout->gcount = ypdout->gcount_offset;
   oflush(pdin); oflush(pdout);
 }
 
@@ -1061,6 +1071,11 @@ void setupYaoProtocol(ProtocolDesc* pd,bool halfgates)
   pd->error = 0;
   ypd->protoType = OC_PD_TYPE_YAO;
   ypd->extra = NULL;
+  ypd->ypdcount_master = malloc(sizeof(*ypd->ypdcount_master));
+  ypd->ypdcount_refcount = malloc(sizeof(*ypd->ypdcount_refcount));
+  ypd->ypdcount = 0;
+  *ypd->ypdcount_refcount = 1;
+  *ypd->ypdcount_refcount = 1;
   pd->partyCount = 2;
   pd->currentParty = ocCurrentPartyDefault;
   pd->feedOblivInputs = (me==1?yaoGenrFeedOblivInputs:yaoEvalFeedOblivInputs);
@@ -1096,7 +1111,7 @@ void mainYaoProtocol(ProtocolDesc* pd, bool point_and_permute,
   YaoProtocolDesc* ypd = pd->extra;
   int me = pd->thisParty;
   ypd->ownOT=false;
-  ypd->gcount = ypd->gcount_offset = ypd->icount = ypd->ocount = 0;
+  ypd->gcount = ypd->icount = ypd->ocount = 0;
   if(me==1)
   {
     gcry_randomize(ypd->R,YAO_KEY_BYTES,GCRY_STRONG_RANDOM);
@@ -1120,6 +1135,10 @@ void mainYaoProtocol(ProtocolDesc* pd, bool point_and_permute,
 void cleanupYaoProtocol(ProtocolDesc* pd)
 {
   YaoProtocolDesc* ypd = pd->extra;
+  if (__atomic_sub_fetch(ypd->ypdcount_refcount, 1, __ATOMIC_RELAXED) == 0) {
+    free(ypd->ypdcount_master);
+    free(ypd->ypdcount_refcount);
+  }
   gcry_cipher_close(ypd->fixedKeyCipher);
   yaoReleaseOt(pd, pd->thisParty);
   free(ypd);
