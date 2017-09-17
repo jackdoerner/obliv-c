@@ -239,7 +239,7 @@ char* sendHashes(ProtocolDesc* pd, int destParty, BCipherRandomGen* gen,
   randomizeBuffer(gen,send1,nu*blen*BC_SEEDLEN_DEFAULT);
   OTsender sender 
     =  honestOTExtSenderAbstract(honestOTExtSenderNew(pd,destParty));
-  sender.send(sender.sender,send0,send1,nu*blen,BC_SEEDLEN_DEFAULT);
+  sender.send(sender,send0,send1,nu*blen,BC_SEEDLEN_DEFAULT);
   otSenderRelease(&sender);
 
   char *option0 = malloc(nu*blen*ni*k);
@@ -271,7 +271,7 @@ char* recvHashes(ProtocolDesc* pd, int srcParty,
   unpackData(sel,datai,ni,len);
   OTrecver recver
     = honestOTExtRecverAbstract(honestOTExtRecverNew(pd,srcParty));
-  recver.recv(recver.recver,recv,sel,ni*blen,BC_SEEDLEN_DEFAULT);
+  recver.recv(recver,recv,sel,ni*blen,BC_SEEDLEN_DEFAULT);
   otRecverRelease(&recver);
   free(sel);
 

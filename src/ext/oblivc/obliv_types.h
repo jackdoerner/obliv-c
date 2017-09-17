@@ -78,24 +78,29 @@ struct ProtocolDesc {
   }
 
 #define NPOT_BATCH_SIZE 7
-typedef struct {
+typedef struct OTsender OTsender;
+struct OTsender {
   void* sender;
-  void (*send)(void*,const char*,const char*,int n,int len);
+  void (*send)(OTsender,char*,char*,int n,int len);
   void (*release)(void*);
-} OTsender;
+  void* extra;
+  void (*release_extra)(void*);
+};
 
-typedef struct {
+typedef struct OTrecver OTrecver;
+struct OTrecver{
   void* recver;
-  void (*recv)(void*,char*,const bool*,int n,int len);
+  void (*recv)(OTrecver,char*,const bool*,int n,int len);
   void (*release)(void*);
-} OTrecver;
+};
 
 typedef void (*OcOtCorrelator)(char*,const char*,int,void*);
-typedef struct {
+typedef struct COTsender COTsender;
+struct COTsender {
   void* sender;
-  void (*send)(void*,char*,char*,int n,int len,OcOtCorrelator,void*);
+  void (*send)(COTsender,char*,char*,int n,int len,OcOtCorrelator,void*);
   void (*release)(void*);
-} COTsender;
+};
 
 typedef OTrecver COTrecver; // Strong typedef would have been nice
 

@@ -32,10 +32,10 @@ void ocShareInit(ProtocolDesc* pd)
   ctx->padder = newBCipherRandomGen();
   ctx->padnonce = 0;
   if(me==1)
-  { ctx->sender = honestOTExtSenderAbstract(honestOTExtSenderNew(pd,2));
+  { ctx->sender = honestOTExtSenderAbstract(honestOTExtSenderSplit(ypd->sender.sender,pd));
     ctx->recver = honestOTExtRecverAbstract(honestOTExtRecverNew(pd,2));
   }else
-  { ctx->recver = honestOTExtRecverAbstract(honestOTExtRecverNew(pd,1));
+  { ctx->recver = honestOTExtRecverAbstract(honestOTExtRecverSplit(ypd->recver.recver,pd));
     ctx->sender = honestOTExtSenderAbstract(honestOTExtSenderNew(pd,1));
   }
   // TODO eventually I should move this to a dedicated
@@ -166,11 +166,11 @@ void ocShareMuxes(ProtocolDesc* pd,char* z,
   randomizeBuffer(ctx->gen,t,bufsz);
   memxor(t2,t,bufsz);
   if(protoCurrentParty(pd)==1)
-  { ctx->sender.send(ctx->sender.sender,t,t2,n,eltsize);
-    ctx->recver.recv(ctx->recver.recver,tr,c,n,eltsize);
+  { ctx->sender.send(ctx->sender,t,t2,n,eltsize);
+    ctx->recver.recv(ctx->recver,tr,c,n,eltsize);
   }else
-  { ctx->recver.recv(ctx->recver.recver,tr,c,n,eltsize);
-    ctx->sender.send(ctx->sender.sender,t,t2,n,eltsize);
+  { ctx->recver.recv(ctx->recver,tr,c,n,eltsize);
+    ctx->sender.send(ctx->sender,t,t2,n,eltsize);
   }
   for(i=0;i<n;++i) memmove(z+i*eltsize,(c[i]?x1:x0)+i*eltsize,eltsize);
   memxor(z,tr,bufsz);
@@ -245,8 +245,7 @@ void ocFromShared_impl(ProtocolDesc* pd,
     yao_key_t *key0 = malloc(n*bits*YAO_KEY_BYTES);
     yao_key_t *key1 = malloc(n*bits*YAO_KEY_BYTES);
     for(i=0;i<n*bits;++i) yaoKeyNewPair(ypd,key0[i],key1[i]);
-    sender->send(sender->sender,
-                     (char*)key0,(char*)key1,n*bits,YAO_KEY_BYTES);
+    sender->send(*sender,(char*)key0,(char*)key1,n*bits,YAO_KEY_BYTES);
     for(i=0;i<n;++i)
     { OblivBit* dbit = __obliv_c__bits(i*bytes+(char*)dest);
       for(j=0;j<bits;++j)
@@ -264,7 +263,7 @@ void ocFromShared_impl(ProtocolDesc* pd,
     yao_key_t *key = malloc(n*bits*YAO_KEY_BYTES);
     bool *sel = malloc(n*bits*sizeof(bool));
     unpackBools(sel,n*bits,src);
-    recver->recv(recver->recver,(char*)key,sel,n*bits,YAO_KEY_BYTES);
+    recver->recv(*recver,(char*)key,sel,n*bits,YAO_KEY_BYTES);
     ypd->icount+=n*bits;
     for(i=0;i<n;++i)
     { OblivBit* dbit = __obliv_c__bits(i*bytes+(char*)dest);

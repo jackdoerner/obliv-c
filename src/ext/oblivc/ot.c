@@ -591,17 +591,17 @@ void npotRecv1Of2(NpotRecver* r,char* dest,const bool* sel,int n,int len,
   }
 }
 
-void npotAbstractSend(void* sender,const char* opt0,const char* opt1,
+void npotAbstractSend(OTsender s,const char* opt0,const char* opt1,
                       int n,int len)
-  { npotSend1Of2(sender,opt0,opt1,n,len,NPOT_BATCH_SIZE); }
+  { npotSend1Of2(s.sender,opt0,opt1,n,len,NPOT_BATCH_SIZE); }
 
 OTsender npotSenderAbstract(NpotSender* s)
 { return (OTsender) {.sender=(void*)s, .send=npotAbstractSend, 
                      .release=(void (*)(void*))npotSenderRelease };
 }
 
-void npotAbstractRecv(void* recver,char* dest,const bool* sel,int n,int len)
-  { npotRecv1Of2(recver,dest,sel,n,len,NPOT_BATCH_SIZE); }
+void npotAbstractRecv(OTrecver r,char* dest,const bool* sel,int n,int len)
+  { npotRecv1Of2(r.recver,dest,sel,n,len,NPOT_BATCH_SIZE); }
 
 OTrecver npotRecverAbstract(NpotRecver* r)
 { return (OTrecver) {.recver=(void*)r, .recv=npotAbstractRecv,
@@ -1079,6 +1079,7 @@ bcipherCryptNoResize(BCipherRandomGen* gen,const char* key,int nonce,
   randomizeBuffer(gen,dest,n);
   memxor(dest,src,n);
 }
+
 
 
 /* 
@@ -1563,10 +1564,10 @@ void honestCorrelatedOTExtRecv1Of2(HonestOTExtRecver* r,char* dest,
 {
   honestOTExtRecv1Of2_impl(r,dest,sel,n,len,true);
 }
-void honestWrapperSend(void* s,const char* opt0,const char* opt1,
-    int n,int len) { honestOTExtSend1Of2(s,opt0,opt1,n,len); }
-void honestWrapperRecv(void* r,char* dest,const bool* sel,
-    int n,int len) { honestOTExtRecv1Of2(r,dest,sel,n,len); }
+void honestWrapperSend(OTsender s,const char* opt0,const char* opt1,
+    int n,int len) { honestOTExtSend1Of2(s.sender,opt0,opt1,n,len); }
+void honestWrapperRecv(OTrecver r,char* dest,const bool* sel,
+    int n,int len) { honestOTExtRecv1Of2(r.recver,dest,sel,n,len); }
 
 OTsender honestOTExtSenderAbstract(HonestOTExtSender* s)
 { return (OTsender){.sender=s, .send=honestWrapperSend, 
@@ -1574,6 +1575,34 @@ OTsender honestOTExtSenderAbstract(HonestOTExtSender* s)
 }
 OTrecver honestOTExtRecverAbstract(HonestOTExtRecver* r)
 { return (OTrecver){.recver=r, .recv=honestWrapperRecv, 
+                    .release=(void(*)(void*))honestOTExtRecverRelease};
+}
+
+typedef struct {
+  OcOtCorrelator corrFun;
+  void* corrArg;
+} CorrelatedOTExtExtra;
+
+void honestCorrelatedWrapperSend(OTsender s,char* opt0,char* opt1,
+                                 int n,int len)
+{ 
+  honestCorrelatedOTExtSend1Of2(s.sender,opt0,opt1,n,len,
+                                ((CorrelatedOTExtExtra *) (s.extra))->corrFun,
+                                ((CorrelatedOTExtExtra *) (s.extra))->corrArg);
+}
+void honestCorrelatedWrapperRecv(OTrecver r,char* dest,const bool* sel,
+    int n,int len) { honestCorrelatedOTExtRecv1Of2(r.recver,dest,sel,n,len); }
+
+OTsender honestCOTExtSenderAbstract(HonestOTExtSender* s,
+  OcOtCorrelator corrFun, void * corrArg)
+{ CorrelatedOTExtExtra* extra = malloc(sizeof(CorrelatedOTExtExtra));
+  extra->corrFun = corrFun;
+  extra->corrArg = corrArg;
+  return (OTsender){.sender=s, .send=honestCorrelatedWrapperSend, .extra=extra,
+                    .release=(void(*)(void*))honestOTExtSenderRelease};
+}
+OTrecver honestCOTExtRecverAbstract(HonestOTExtRecver* r)
+{ return (OTrecver){.recver=r, .recv=honestCorrelatedWrapperRecv, 
                     .release=(void(*)(void*))honestOTExtRecverRelease};
 }
 
@@ -2140,10 +2169,10 @@ OTrecver maliciousOTExtRecverAbstract(MaliciousOTExtRecver* r)
 }
 #endif
 
-void maliciousWrapperSend(void* s,const char* opt0,const char* opt1,
-    int n,int len) { otExtSend1Of2(s,opt0,opt1,n,len); }
-void maliciousWrapperRecv(void* r,char* dest,const bool* sel,
-    int n,int len) { otExtRecv1Of2(r,dest,sel,n,len); }
+void maliciousWrapperSend(OTsender s,const char* opt0,const char* opt1,
+    int n,int len) { otExtSend1Of2(s.sender,opt0,opt1,n,len); }
+void maliciousWrapperRecv(OTrecver r,char* dest,const bool* sel,
+    int n,int len) { otExtRecv1Of2(r.recver,dest,sel,n,len); }
 
 OTsender maliciousOTExtSenderAbstract(OTExtSender* s)
 { return (OTsender){.sender=s, .send=maliciousWrapperSend,

@@ -733,6 +733,8 @@ void yaoFlipBit(ProtocolDesc* pd,OblivBit* r)
 void yaoSetBitNot(ProtocolDesc* pd,OblivBit* r,const OblivBit* a)
   { *r = *a; yaoFlipBit(pd,r); }
 
+//Use full OT Extensions instead of correlated OT?
+//#define YAO_DISABLE_CORRELATED_OT
 #define YAO_FEED_MAX_BATCH 1000000
 
 void yaoGenrFeedOblivInputs(ProtocolDesc* pd
@@ -754,23 +756,38 @@ void yaoGenrFeedOblivInputs(ProtocolDesc* pd
     size_t batch = (bc<YAO_FEED_MAX_BATCH?bc:YAO_FEED_MAX_BATCH);
     char *buf0 = malloc(batch*YAO_KEY_BYTES),
          *buf1 = malloc(batch*YAO_KEY_BYTES);
+    OblivBit ** o = malloc(batch*sizeof(OblivBit *));
     size_t bp=0;
     for(;hasBit(&it);nextBit(&it))
     { 
-      OblivBit* o = curDestBit(&it);
+      o[bp] = curDestBit(&it);
+#ifdef YAO_DISABLE_CORRELATED_OT
       yaoKeyNewPair(ypd,w0,w1); // does ypd->icount++
       yaoKeyCopy(buf0+bp*YAO_KEY_BYTES,w0);
       yaoKeyCopy(buf1+bp*YAO_KEY_BYTES,w1);
-      o->yao.inverted = false; o->unknown = true;
-      yaoKeyCopy(o->yao.w,w0);
+#else
+      ypd->icount++;
+#endif
       ++bp;
       if(bp>=batch) // flush out every now and then
-      { ypd->sender.send(ypd->sender.sender,buf0,buf1,bp,YAO_KEY_BYTES);
+      { ypd->sender.send(ypd->sender,buf0,buf1,bp,YAO_KEY_BYTES);
+        for (size_t ii=0;ii<bp;++ii)
+        { // We must wait until *after* OT is complete to copy
+          // because COT might overwrite our wire labels
+          o[ii]->yao.inverted = false; o[ii]->unknown = true;
+          yaoKeyCopy(o[ii]->yao.w,buf0+ii*YAO_KEY_BYTES);
+        }
         bp=0;
       }
     }
-    if(bp) ypd->sender.send(ypd->sender.sender,buf0,buf1,bp,YAO_KEY_BYTES);
-    free(buf0); free(buf1);
+    if(bp) 
+    { ypd->sender.send(ypd->sender,buf0,buf1,bp,YAO_KEY_BYTES);
+      for (size_t ii=0;ii<bp;++ii)
+      { o[ii]->yao.inverted = false; o[ii]->unknown = true;
+        yaoKeyCopy(o[ii]->yao.w,buf0+ii*YAO_KEY_BYTES);
+      }
+    }
+    free(buf0); free(buf1); free(o);
   }
 }
 void yaoEvalFeedOblivInputs(ProtocolDesc* pd
@@ -798,13 +815,13 @@ void yaoEvalFeedOblivInputs(ProtocolDesc* pd
       ypd->icount++;
       ++bp;
       if(bp>=batch)
-      { ypd->recver.recv(ypd->recver.recver,buf,sel,bp,YAO_KEY_BYTES);
+      { ypd->recver.recv(ypd->recver,buf,sel,bp,YAO_KEY_BYTES);
         for(i=0;i<bp;++i) yaoKeyCopy(dest[i],buf+i*YAO_KEY_BYTES);
         bp=0;
       }
     }
     if(bp) // flush out every now and then
-    { ypd->recver.recv(ypd->recver.recver,buf,sel,bp,YAO_KEY_BYTES);
+    { ypd->recver.recv(ypd->recver,buf,sel,bp,YAO_KEY_BYTES);
       for(i=0;i<bp;++i) yaoKeyCopy(dest[i],buf+i*YAO_KEY_BYTES);
     }
     free(buf); free(dest); free(sel);
@@ -1026,6 +1043,13 @@ void yaoReleaseOt(ProtocolDesc* pd,int me)
   }
 }
 
+void yaoKeyCorrelator(char* out,const char* in,int c,void* corrArg)
+{ //assume in/out/corrArg are all YAO_KEY_BYTES long
+  yaoKeyCopy(out, in);
+  yaoKeyXor(out, corrArg);
+}
+
+
 void splitYaoProtocolExtra(ProtocolDesc* pdout, ProtocolDesc * pdin) {
   YaoProtocolDesc* ypdin = pdin->extra;
   YaoProtocolDesc* ypdout = malloc(sizeof(YaoProtocolDesc));
@@ -1042,10 +1066,18 @@ void splitYaoProtocolExtra(ProtocolDesc* pdout, ProtocolDesc * pdin) {
     gcry_randomize(ypdout->I,YAO_KEY_BYTES,GCRY_STRONG_RANDOM);
     gcry_randomize(&ypdout->gcount_offset,sizeof(ypdout->gcount_offset),GCRY_STRONG_RANDOM);
     osend(pdout,2,&ypdout->gcount_offset,sizeof(ypdout->gcount_offset));
+#ifdef YAO_DISABLE_CORRELATED_OT
     ypdout->sender = honestOTExtSenderAbstract(honestOTExtSenderSplit(ypdin->sender.sender,pdout));
+#else    
+    ypdout->sender = honestCOTExtSenderAbstract(honestOTExtSenderSplit(ypdin->sender.sender,pdout), yaoKeyCorrelator, ypdout->R);
+#endif
   } else {
     orecv(pdout,1,&ypdout->gcount_offset,sizeof(ypdout->gcount_offset));
+#ifdef YAO_DISABLE_CORRELATED_OT
     ypdout->recver = honestOTExtRecverAbstract(honestOTExtRecverSplit(ypdin->recver.recver,pdout));
+#else
+    ypdout->recver = honestCOTExtRecverAbstract(honestOTExtRecverSplit(ypdin->recver.recver,pdout));
+#endif
   }
   ypdout->gcount = ypdout->gcount_offset;
   oflush(pdin); oflush(pdout);
@@ -1105,12 +1137,20 @@ void mainYaoProtocol(ProtocolDesc* pd, bool point_and_permute,
 
     if(ypd->sender.sender==NULL)
     { ypd->ownOT=true;
+#ifdef YAO_DISABLE_CORRELATED_OT
       ypd->sender = honestOTExtSenderAbstract(honestOTExtSenderNew(pd,2));
+#else
+      ypd->sender = honestCOTExtSenderAbstract(honestOTExtSenderNew(pd,2), yaoKeyCorrelator, ypd->R);
+#endif
     }
   }else 
     if(ypd->recver.recver==NULL)
     { ypd->ownOT=true;
+#ifdef YAO_DISABLE_CORRELATED_OT
       ypd->recver = honestOTExtRecverAbstract(honestOTExtRecverNew(pd,1));
+#else
+      ypd->recver = honestCOTExtRecverAbstract(honestOTExtRecverNew(pd,1));
+#endif
     }
 
   currentProto = pd;

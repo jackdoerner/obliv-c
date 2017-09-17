@@ -53,7 +53,10 @@ void dhRandomInit(void);
 void dhRandomFinalize(void);
 
 static inline void otSenderRelease(OTsender* sender)
-  { sender->release(sender->sender); }
+  { sender->release(sender->sender); 
+    if (sender->extra != NULL && sender->release_extra != NULL) sender->release_extra(sender->extra);
+    if (sender->extra != NULL) free(sender->extra);
+  }
 static inline void otRecverRelease(OTrecver* recver)
   { recver->release(recver->recver); }
 
@@ -81,6 +84,7 @@ void honestOTExtRecv1Of2(struct HonestOTExtRecver* r,char* dest,const bool* sel,
 void honestCorrelatedOTExtRecv1Of2(struct HonestOTExtRecver* r,char* dest,
     const bool* sel,int n,int len);
 OTrecver honestOTExtRecverAbstract(struct HonestOTExtRecver* r);
+OTrecver honestCOTExtRecverAbstract(struct HonestOTExtRecver* r);
 void* honestOTExtRecv1Of2Start(struct HonestOTExtRecver* r,const bool* sel,
     int n);
 void honestOTExtRecv1Of2Chunk(void* vargs,char* dest,int nchunk,
@@ -94,10 +98,10 @@ void honestOTExtSend1Of2(struct HonestOTExtSender* s,
 void honestCorrelatedOTExtSend1Of2(struct HonestOTExtSender* s,
     char* opt0,char* opt1,int n,int len,OcOtCorrelator f,void* corrArg);
 OTsender honestOTExtSenderAbstract(struct HonestOTExtSender* s);
+OTsender honestCOTExtSenderAbstract(struct HonestOTExtSender* s, OcOtCorrelator corrFun, void * corrArg);
 void* honestOTExtSend1Of2Start(struct HonestOTExtSender* s,int n);
 void honestOTExtSend1Of2Chunk(void* vargs,char* opt0,char* opt1,int nchunk,
     int len,OcOtCorrelator f,void* corrArg);
-void honestOTExtSend1Of2Skip(void* vargs);
 void honestOTExtSend1Of2Skip(void* vargs);
 
 struct OTExtSender;
